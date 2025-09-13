@@ -615,6 +615,20 @@
                 }, 2000);
             });
         }
+        function broadcastRoomPeers(toPeerId = null) {
+            const peers = Array.from(userManager.connectedPeers.keys());
+            const message = {
+                type: 'room_peers',
+                peers
+            };
+
+            if (toPeerId) {
+                const conn = userManager.connectedPeers.get(toPeerId);
+                conn?.send(message);
+            } else {
+             userManager.broadcast(message);
+           }
+        }
 
         // 创建房间
         function createRoom() {
@@ -691,6 +705,7 @@
                 
                 // 如果已加入房间，发送房间信息
                 if (roomManager.getRoomCode()) {
+                    broadcastRoomPeers(conn.peer);
                     conn.send({
                         type: 'room_info',
                         roomCode: roomManager.getRoomCode()
@@ -733,69 +748,99 @@
 
         // 处理传入数据
         function handleIncomingData(data, peerId) {
-            console.log('收到数据:', data);
-            
-            if (data.type === 'message') {
-                renderMessage({
-                    user: data.user,
-                    identifier: data.identifier,
-                    text: data.text,
-                    timestamp: data.timestamp
+    console.log('收到数据:', data);
+
+    switch(data.type) {
+        case 'message':
+            renderMessage({
+                user: data.user,
+                identifier: data.identifier,
+                text: data.text,
+                timestamp: data.timestamp
+            });
+            break;
+
+        case 'user_join':
+            userManager.setUserInfo(peerId, data);
+            addUserToList(peerId, data.user);
+            addSystemMessage(`用户 ${data.user} 已加入聊天`);
+
+            // 自动连接回这个用户（双向连接）
+            if (data.peerId && !userManager.connectedPeers.has(data.peerId)) {
+                connectToPeer(data.peerId);
+            }
+
+            // 告诉新人当前房间里已有成员
+            if (roomManager.getRoomCode()) {
+                const existingPeers = Array.from(userManager.connectedPeers.keys());
+                data.peerId && existingPeers.forEach(pid => {
+                    if (pid !== data.peerId) {
+                        const conn = userManager.connectedPeers.get(data.peerId);
+                        conn?.send({
+                            type: 'room_peers',
+                            peers: existingPeers
+                        });
+                    }
                 });
-            } else if (data.type === 'user_join') {
-                userManager.setUserInfo(peerId, data);
-                addUserToList(peerId, data.user);
-                addSystemMessage(`用户 ${data.user} 已加入聊天`);
-                
-                // 自动连接回这个用户
-                if (data.peerId && !userManager.connectedPeers.has(data.peerId)) {
-                    connectToPeer(data.peerId);
-                }
-            } else if (data.type === 'room_created') {
+            }
+            break;
+
+        case 'room_created':
+            roomManager.setRoomCode(data.roomCode);
+            elements.roomCode.textContent = data.roomCode;
+            addSystemMessage(`已加入房间: ${data.roomCode}`);
+            updateURLWithRoomCode(data.roomCode);
+            break;
+
+        case 'join_room':
+            if (data.roomCode === roomManager.getRoomCode()) {
+                // 同一房间的用户，自动连接
+                connectToPeer(peerId);
+            }
+            break;
+
+        case 'room_info':
+            if (data.roomCode && !roomManager.getRoomCode()) {
                 roomManager.setRoomCode(data.roomCode);
                 elements.roomCode.textContent = data.roomCode;
                 addSystemMessage(`已加入房间: ${data.roomCode}`);
                 updateURLWithRoomCode(data.roomCode);
-            } else if (data.type === 'join_room') {
-                if (data.roomCode === roomManager.getRoomCode()) {
-                    // 同一个房间的用户，自动连接
-                    connectToPeer(peerId);
-                }
-            } else if (data.type === 'room_info') {
-                if (data.roomCode && !roomManager.getRoomCode()) {
-                    roomManager.setRoomCode(data.roomCode);
-                    elements.roomCode.textContent = data.roomCode;
-                    addSystemMessage(`已加入房间: ${data.roomCode}`);
-                    updateURLWithRoomCode(data.roomCode);
-                }
             }
-        }
+            break;
+
+        case 'room_peers':
+            // 新人接收到房间内其他 peer 列表 → 依次连接
+            if (Array.isArray(data.peers)) {
+                data.peers.forEach(pid => {
+                    if (pid !== myPeerId && !userManager.connectedPeers.has(pid)) {
+                        connectToPeer(pid);
+                    }
+                });
+            }
+            break;
+    }
+}
+
 
         // 发送消息
         function sendMessage() {
-            const text = elements.messageInput.value.trim();
-            if (!text) return;
-            
-            const user = userManager.getCurrentUser();
-            if (!user) return;
-            
-            const message = {
-                type: 'message',
-                user: user.username,
-                identifier: user.identifier,
-                text: text,
-                timestamp: Date.now()
-            };
-            
-            // 广播消息
-            userManager.broadcast(message);
-            
-            // 清空输入框
-            elements.messageInput.value = '';
-            
-            // 本地渲染消息
-            renderMessage(message);
-        }
+    const text = elements.messageInput.value.trim();
+    if (!text) return;
+
+    const user = userManager.getCurrentUser();
+    const message = {
+        type: 'message',
+        user: user.username,
+        identifier: user.identifier,
+        text: text,
+        timestamp: Date.now()
+    };
+
+    userManager.broadcast(message);
+    renderMessage(message);
+    elements.messageInput.value = '';
+}
+
 
         // 渲染消息
         function renderMessage(message) {
